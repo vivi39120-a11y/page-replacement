@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Page Replacement 模擬（FIFO / LRU / OPT / Second Chance）</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK TC", sans-serif;
+      margin: 20px;
+    }
+    h1 {
+      margin-bottom: 8px;
+    }
+    h2 {
+      margin-top: 24px;
+    }
+    button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 4px 8px;
+      text-align: center;
+    }
+    th {
+      background-color: #f6f6f6;
+    }
+    tr:nth-child(even) { background-color: #fafafa; }
+    td.fault {
+      background-color: #ffecec;
+    }
+    pre.summary {
+      background-color: #f6f6f6;
+      padding: 10px 12px;
+      border-radius: 4px;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    span.alg-fifo { color: #1f77b4; font-weight: bold; }
+    span.alg-lru  { color: #2ca02c; font-weight: bold; }
+    span.alg-opt  { color: #d62728; font-weight: bold; }
+    span.alg-sc   { color: #9467bd; font-weight: bold; }
+
+    /* 簡單的長條圖樣式 */
+    .chart {
+      margin-top: 10px;
+      max-width: 600px;
+    }
+    .chart-row {
+      display: flex;
+      align-items: center;
+      margin: 4px 0;
+    }
+    .chart-label {
+      width: 80px;
+      font-weight: bold;
+    }
+    .chart-bar-wrapper {
+      flex: 1;
+      background-color: #f0f0f0;
+      border-radius: 4px;
+      height: 16px;
+      margin: 0 8px;
+      overflow: hidden;
+    }
+    .chart-bar {
+      height: 100%;
+      border-radius: 4px;
+    }
+    .chart-bar.fifo { background-color: #1f77b4; }
+    .chart-bar.lru  { background-color: #2ca02c; }
+    .chart-bar.opt  { background-color: #d62728; }
+    .chart-bar.sc   { background-color: #9467bd; }
+    .chart-value {
+      width: 90px;
+      text-align: right;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Page Replacement 模擬系統</h1>
+<p>
+  每次重新整理本頁面，或按下「重新產生」按鈕，系統會：
+</p>
+<ul>
+  <li>隨機產生 50 筆 page 參考字串</li>
+  <li>對 FIFO / LRU / Optimal / Second Chance 四種演算法進行模擬</li>
+  <li>逐回合顯示頁框狀態並記錄 page fault</li>
+  <li>統計各演算法的 page fault 總次數、命中率 (Hit Rate)、置換率 (Replacement Rate)</li>
+  <li>以長條圖視覺化各演算法的 page fault，方便比較效能</li>
+</ul>
+
+<button id="rerun-btn">重新產生隨機模擬</button>
+
+<h2>4. 結果顯示：參考字串</h2>
+<pre id="ref-seq" class="summary"></pre>
+
+<h2>4. 結果顯示：逐回合頁框狀態與 Page Fault</h2>
+<p>紅色欄位代表該回合發生 page fault，方括號內為當前頁框內容。</p>
+<div id="table-container"></div>
+
+<h2>4. 結果顯示：各演算法統計</h2>
+<pre id="summary" class="summary"></pre>
+
+<h2>5. 效能比較與分析</h2>
+<p>下表列出各演算法的 page fault 總次數、命中率與置換率，並用長條圖比較 page fault 數量。</p>
+<div id="metrics-table"></div>
+
+<h3>Page Fault 長條圖</h3>
+<div id="fault-chart" class="chart"></div>
+
+<script>
+// 產生隨機參考字串
+function generateRef(length, minPage, maxPage) {
+  const ref = [];
+  for (let i = 0; i < length; i++) {
+    const p = Math.floor(Math.random() * (maxPage - minPage + 1)) + minPage;
+    ref.push(p);
+  }
+  return ref;
+}
+
+// 將 frames 轉成 "[1 2 3 4]" 這樣的字串
+function framesToStr(frames) {
+  return "[" + frames.join(" ") + "]";
+}
+
+// FIFO 模擬：回傳 history, faults, hits, replacements
+function simulateFIFO(ref, frameCount) {
+  const frames = [];
+  const history = [];
+  let faults = 0;
+  let replacements = 0;
+
+  for (const p of ref) {
+    if (frames.includes(p)) {
+      history.push({ frames: [...frames], fault: false });
+    } else {
+      faults++;
+      if (frames.length < frameCount) {
+        frames.push(p);
+      } else {
+        frames.shift();           // 淘汰最早進來的頁面
+        frames.push(p);
+        replacements++;           // 這次是「真正的替換」
+      }
+      history.push({ frames: [...frames], fault: true });
+    }
+  }
+  const hits = ref.length - faults;
+  return { history, faults, hits, replacements };
+}
+
+// LRU 模擬
+function simulateLRU(ref, frameCount) {
+  const frames = [];
+  const lastUsed = new Map(); // page -> last index
+  const history = [];
+  let faults = 0;
+  let replacements = 0;
+
+  ref.forEach((p, i) => {
+    if (frames.includes(p)) {
+      lastUsed.set(p, i);
+      history.push({ frames: [...frames], fault: false });
+    } else {
+      faults++;
+      if (frames.length < frameCount) {
+        frames.push(p);
+      } else {
+        let lruPage = frames[0];
+        let minIdx = lastUsed.has(lruPage) ? lastUsed.get(lruPage) : -1;
+
+        for (const page of frames) {
+          const idx = lastUsed.has(page) ? lastUsed.get(page) : -1;
+          if (idx < minIdx) {
+            minIdx = idx;
+            lruPage = page;
+          }
+        }
+        const pos = frames.indexOf(lruPage);
+        frames[pos] = p;
+        replacements++;
+      }
+      lastUsed.set(p, i);
+      history.push({ frames: [...frames], fault: true });
+    }
+  });
+
+  const hits = ref.length - faults;
+  return { history, faults, hits, replacements };
+}
+
+// Optimal 模擬
+function simulateOPT(ref, frameCount) {
+  const frames = [];
+  const history = [];
+  let faults = 0;
+  let replacements = 0;
+
+  for (let i = 0; i < ref.length; i++) {
+    const p = ref[i];
+    if (frames.includes(p)) {
+      history.push({ frames: [...frames], fault: false });
+    } else {
+      faults++;
+      if (frames.length < frameCount) {
+        frames.push(p);
+      } else {
+        let victimIdx = 0;
+        let maxDist = -1;
+
+        for (let idx = 0; idx < frames.length; idx++) {
+          const page = frames[idx];
+          let dist = Infinity;
+          for (let j = i + 1; j < ref.length; j++) {
+            if (ref[j] === page) {
+              dist = j - i;
+              break;
+            }
+          }
+          if (dist > maxDist) {
+            maxDist = dist;
+            victimIdx = idx;
+          }
+        }
+        frames[victimIdx] = p;
+        replacements++;
+      }
+      history.push({ frames: [...frames], fault: true });
+    }
+  }
+
+  const hits = ref.length - faults;
+  return { history, faults, hits, replacements };
+}
+
+// Second Chance 模擬
+function simulateSC(ref, frameCount) {
+  const frames = new Array(frameCount).fill(null);
+  const refBits = new Array(frameCount).fill(0);
+  let pointer = 0;
+  let filled = 0;
+  const history = [];
+  let faults = 0;
+  let replacements = 0;
+
+  for (const p of ref) {
+    const currentFrames = frames.slice(0, filled);
+    const hitIndex = currentFrames.indexOf(p);
+
+    if (hitIndex !== -1) {
+      refBits[hitIndex] = 1;
+      history.push({
+        frames: currentFrames.filter(x => x !== null),
+        fault: false
+      });
+      continue;
+    }
+
+    // page fault
+    faults++;
+
+    if (filled < frameCount) {
+      // 還在填滿記憶體的階段：算 page fault，但不算「替換」
+      frames[filled] = p;
+      refBits[filled] = 1;
+      filled++;
+      history.push({
+        frames: frames.slice(0, filled).filter(x => x !== null),
+        fault: true
+      });
+    } else {
+      // frame 已滿：這裡才是「真正的 page 替換」
+      while (true) {
+        if (refBits[pointer] === 0) {
+          frames[pointer] = p;
+          refBits[pointer] = 1;
+          pointer = (pointer + 1) % frameCount;
+          replacements++;  // 記錄一次替換
+          break;
+        } else {
+          refBits[pointer] = 0;
+          pointer = (pointer + 1) % frameCount;
+        }
+      }
+      history.push({
+        frames: frames.filter(x => x !== null),
+        fault: true
+      });
+    }
+  }
+
+  const hits = ref.length - faults;
+  return { history, faults, hits, replacements };
+}
+
+// 建立逐步結果表格
+function buildTable(ref, histories) {
+  const algorithms = ["FIFO", "LRU", "OPT", "SC"];
+  let html = `
+<table>
+  <thead>
+    <tr>
+      <th>回合</th>
+      <th>要求頁面</th>
+      <th>FIFO 狀態</th>
+      <th>LRU 狀態</th>
+      <th>OPT 狀態</th>
+      <th>SC 狀態</th>
+    </tr>
+  </thead>
+  <tbody>
+`;
+
+  for (let i = 0; i < ref.length; i++) {
+    const p = ref[i];
+    html += `    <tr>
+      <td>${i + 1}</td>
+      <td>${p}</td>
+`;
+    for (const alg of algorithms) {
+      const step = histories[alg].history[i];
+      const cls = step.fault ? "fault" : "";
+      html += `      <td class="${cls}">${framesToStr(step.frames)}</td>\n`;
+    }
+    html += "    </tr>\n";
+  }
+
+  html += "  </tbody>\n</table>\n";
+  return html;
+}
+
+// 建立效能比較表 (page fault, hit rate, replacement rate)
+function buildMetricsTable(metrics, totalRequests) {
+  let html = `
+<table>
+  <thead>
+    <tr>
+      <th>演算法</th>
+      <th>Page Fault 總次數</th>
+      <th>Hit 次數</th>
+      <th>命中率 Hit Rate</th>
+      <th>替換次數 (Replacements)</th>
+      <th>置換率 Replacement Rate</th>
+    </tr>
+  </thead>
+  <tbody>
+`;
+
+  const names = {
+    FIFO: "FIFO",
+    LRU: "LRU",
+    OPT: "Optimal",
+    SC: "Second Chance"
+  };
+
+  for (const key of ["FIFO", "LRU", "OPT", "SC"]) {
+    const m = metrics[key];
+    const hitRate = (m.hits / totalRequests * 100).toFixed(2) + "%";
+    const replRate = (m.replacements / totalRequests * 100).toFixed(2) + "%";
+
+    html += `
+    <tr>
+      <td>${names[key]}</td>
+      <td>${m.faults}</td>
+      <td>${m.hits}</td>
+      <td>${hitRate}</td>
+      <td>${m.replacements}</td>
+      <td>${replRate}</td>
+    </tr>
+`;
+  }
+
+  html += "  </tbody>\n</table>\n";
+  return html;
+}
+
+// 建立 Page Fault 長條圖
+function buildFaultChart(metrics) {
+  const faults = [
+    metrics.FIFO.faults,
+    metrics.LRU.faults,
+    metrics.OPT.faults,
+    metrics.SC.faults
+  ];
+  const maxFaults = Math.max(...faults) || 1;
+
+  const algInfo = [
+    { key: "FIFO", label: "FIFO",  class: "fifo" },
+    { key: "LRU",  label: "LRU",   class: "lru"  },
+    { key: "OPT",  label: "OPT",   class: "opt"  },
+    { key: "SC",   label: "SC",    class: "sc"   }
+  ];
+
+  let html = "";
+
+  for (const info of algInfo) {
+    const f = metrics[info.key].faults;
+    const widthPercent = (f / maxFaults) * 100;
+    html += `
+  <div class="chart-row">
+    <span class="chart-label">${info.label}</span>
+    <div class="chart-bar-wrapper">
+      <div class="chart-bar ${info.class}" style="width:${widthPercent}%;"></div>
+    </div>
+    <span class="chart-value">${f} faults</span>
+  </div>
+`;
+  }
+
+  return html;
+}
+
+// 執行整個模擬並更新畫面
+function runSimulation() {
+  const frameCount = 4;
+  const pageMin = 1;
+  const pageMax = 7;
+  const refLength = 50;
+
+  const ref = generateRef(refLength, pageMin, pageMax);
+
+  const fifo = simulateFIFO(ref, frameCount);
+  const lru  = simulateLRU(ref, frameCount);
+  const opt  = simulateOPT(ref, frameCount);
+  const sc   = simulateSC(ref, frameCount);
+
+  const metrics = { FIFO: fifo, LRU: lru, OPT: opt, SC: sc };
+
+  // 顯示參考字串
+  document.getElementById("ref-seq").textContent = ref.join(" ");
+
+  // 顯示逐步表格
+  document.getElementById("table-container").innerHTML = buildTable(ref, metrics);
+
+  // 簡單統計摘要 (只列出 faults / hit rate)
+  const total = ref.length;
+  const summaryLines = [
+    `<span class="alg-fifo">FIFO</span>: ${fifo.faults} 次 page fault，Hit Rate = ${(fifo.hits / total * 100).toFixed(2)}%`,
+    `<span class="alg-lru">LRU</span>: ${lru.faults} 次 page fault，Hit Rate = ${(lru.hits / total * 100).toFixed(2)}%`,
+    `<span class="alg-opt">Optimal</span>: ${opt.faults} 次 page fault，Hit Rate = ${(opt.hits / total * 100).toFixed(2)}%`,
+    `<span class="alg-sc">Second</span> Chance: ${sc.faults} 次 page fault，Hit Rate = ${(sc.hits / total * 100).toFixed(2)}%`
+  ];
+  document.getElementById("summary").innerHTML = summaryLines.join("\n");
+
+  // 效能比較表
+  document.getElementById("metrics-table").innerHTML =
+    buildMetricsTable(metrics, total);
+
+  // Fault 長條圖
+  document.getElementById("fault-chart").innerHTML =
+    buildFaultChart(metrics);
+}
+
+// 一載入頁面就先跑一次
+document.addEventListener("DOMContentLoaded", () => {
+  runSimulation();
+  document.getElementById("rerun-btn").addEventListener("click", runSimulation);
+});
+</script>
+
+</body>
+</html>
